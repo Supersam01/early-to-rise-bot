@@ -1,15 +1,28 @@
 import os
+from datetime import datetime
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8397097729:AAE7eextZCH1DuqMjyNjxhPy2t1OqxO7HJo")
-ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "8251843110"))
+BOT_TOKEN = "8397097729:AAE7eextZCH1DuqMjyNjxhPy2t1OqxO7HJo"
+ADMIN_USERNAME = "@early_to_rise"
 
-DB_PATH = os.getenv("DB_PATH", "app/early_to_rise.db")
+DB_PATH = "app/early_to_rise.db"
 
+# Stock limit per item
+MAX_STOCK_PER_ITEM = 10
+
+# Packaging fee
 PACKAGING_FEE_PER_ITEM = 200
-DELIVERY_WINDOW_MINUTES = 10
 
+# Delivery rules
 HOSTEL_PRIORITY = [
-    "Dorcas", "Deborah", "Lydia", "Mary",
-    "Daniel", "Joseph", "Paul", "Peter",
-    "Esther", "John"
+    "Dorcas", "Deborah", "Lydia", "Mary", "Daniel",
+    "Joseph", "Paul", "Peter", "Esther", "John"
 ]
+
+DELIVERY_WINDOW_MINUTES = 10  # 10-minute window
+
+# Bot active period
+START_DATE = datetime(2026, 1, 18)
+END_DATE = datetime(2026, 2, 28)
+
+# Language
+LANGUAGE = "EN"
