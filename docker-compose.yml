@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: early_to_rise_bot
+    restart: always
+    environment:
+      - TZ=Africa/Lagos  # Sets the container to Nigerian time
+    volumes:
+      # This maps the database file outside the container so it persists
+      - ./early_to_rise.db:/usr/src/app/early_to_rise.db
+    env_file:
+      - .env
