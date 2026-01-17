@@ -1,78 +1,161 @@
 import sqlite3
-from sqlite3 import Connection
-from typing import List, Optional
-from .models import MenuItem, CartItem, Order
-from .config import DB_PATH
+import json
+from datetime import datetime
 
+DB_PATH = "early_to_rise.db"
+DEFAULT_STOCK = 10
 
-class Database:
-    def __init__(self):
-        self.conn: Connection = sqlite3.connect(DB_PATH, check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row
-        self.create_tables()
+def init_db():
+    """Initialize the database tables."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # Orders Table
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS orders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        ref_code TEXT UNIQUE,
+        hostel TEXT,
+        items TEXT, -- Stored as JSON string
+        total_price INTEGER,
+        status TEXT DEFAULT 'PENDING', -- PENDING, PAID
+        delivery_slot TEXT DEFAULT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    ''')
 
-    def create_tables(self):
-        with open("app/schema.sql", "r") as f:
-            self.conn.executescript(f.read())
-        self.conn.commit()
+    # Stock Table (Tracks daily limits)
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS stock (
+        item_name TEXT PRIMARY KEY,
+        quantity INTEGER,
+        last_reset_date TEXT
+    )
+    ''')
+    
+    conn.commit()
+    conn.close()
 
-    def add_menu_item(self, item: MenuItem):
-        self.conn.execute(
-            "INSERT INTO menu (name, price, profit, category, stock) VALUES (?, ?, ?, ?, ?)",
-            (item.name, item.price, item.profit, item.category, item.stock)
-        )
-        self.conn.commit()
+def _get_today_str():
+    return datetime.now().strftime("%Y-%m-%d")
 
-    def get_menu(self) -> List[MenuItem]:
-        rows = self.conn.execute("SELECT * FROM menu").fetchall()
-        return [MenuItem(**row) for row in map(dict, rows)]
+def check_stock(item_name):
+    """
+    Checks if an item is in stock for the current day.
+    Resets stock to 10 if it's a new day.
+    Returns True if stock > 0.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    today = _get_today_str()
+    
+    cursor.execute("SELECT quantity, last_reset_date FROM stock WHERE item_name = ?", (item_name,))
+    row = cursor.fetchone()
+    
+    current_qty = 0
+    
+    if row is None:
+        # Item never tracked, insert default
+        cursor.execute("INSERT INTO stock (item_name, quantity, last_reset_date) VALUES (?, ?, ?)", 
+                       (item_name, DEFAULT_STOCK, today))
+        current_qty = DEFAULT_STOCK
+        conn.commit()
+    else:
+        qty, last_date = row
+        if last_date != today:
+            # New day, reset stock
+            cursor.execute("UPDATE stock SET quantity = ?, last_reset_date = ? WHERE item_name = ?", 
+                           (DEFAULT_STOCK, today, item_name))
+            current_qty = DEFAULT_STOCK
+            conn.commit()
+        else:
+            current_qty = qty
+            
+    conn.close()
+    return current_qty > 0
 
-    def get_menu_item(self, item_id: int) -> Optional[MenuItem]:
-        row = self.conn.execute("SELECT * FROM menu WHERE id = ?", (item_id,)).fetchone()
-        if not row:
-            return None
-        return MenuItem(**dict(row))
+def reduce_stock(item_list):
+    """
+    Reduces stock for a list of items by 1.
+    Call this ONLY when order is confirmed/placed.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    today = _get_today_str()
+    
+    for item_name in item_list:
+        # Ensure record exists and is fresh before reducing (reuse check logic slightly)
+        cursor.execute("SELECT quantity, last_reset_date FROM stock WHERE item_name = ?", (item_name,))
+        row = cursor.fetchone()
+        
+        if row is None:
+            cursor.execute("INSERT INTO stock VALUES (?, ?, ?)", (item_name, DEFAULT_STOCK - 1, today))
+        else:
+            qty, last_date = row
+            if last_date != today:
+                # Reset then reduce
+                new_qty = DEFAULT_STOCK - 1
+                cursor.execute("UPDATE stock SET quantity = ?, last_reset_date = ? WHERE item_name = ?", 
+                               (new_qty, today, item_name))
+            else:
+                # Just reduce
+                new_qty = max(0, qty - 1)
+                cursor.execute("UPDATE stock SET quantity = ? WHERE item_name = ?", (new_qty, item_name))
+                
+    conn.commit()
+    conn.close()
 
-    def update_stock(self, item_id: int, quantity: int):
-        self.conn.execute(
-            "UPDATE menu SET stock = stock - ? WHERE id = ?",
-            (quantity, item_id)
-        )
-        self.conn.commit()
+def save_order(user_id, ref_code, hostel, items_data, total_price):
+    """Saves a new order to the database."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # items_data is a list of dicts, convert to JSON string
+    items_json = json.dumps(items_data)
+    
+    cursor.execute('''
+        INSERT INTO orders (user_id, ref_code, hostel, items, total_price)
+        VALUES (?, ?, ?, ?, ?)
+    ''', (user_id, ref_code, hostel, items_json, total_price))
+    
+    conn.commit()
+    conn.close()
 
-    def create_order(self, order: Order) -> int:
-        cursor = self.conn.execute(
-            "INSERT INTO orders (user_id, username, hostel, combo_type, packaging_fee, total_amount, status, time_slot, reference_code) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                order.user_id,
-                order.username,
-                order.hostel,
-                order.combo_type,
-                order.packaging_fee,
-                order.total_amount,
-                order.status,
-                order.time_slot,
-                order.reference_code
-            )
-        )
-        self.conn.commit()
-        return cursor.lastrowid
+def get_order(ref_code):
+    """Retrieve order details by reference code."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row # Allows accessing columns by name
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM orders WHERE ref_code = ?", (ref_code,))
+    row = cursor.fetchone()
+    conn.close()
+    return row
 
-    def add_cart_item(self, order_id: int, cart_item: CartItem):
-        self.conn.execute(
-            "INSERT INTO cart_items (order_id, menu_item_id, quantity, combo_type) VALUES (?, ?, ?, ?)",
-            (order_id, cart_item.menu_item_id, cart_item.quantity, cart_item.combo_type)
-        )
-        self.conn.commit()
+def update_order_paid(ref_code, delivery_slot):
+    """Marks order as PAID and assigns the delivery slot."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE orders SET status = 'PAID', delivery_slot = ? WHERE ref_code = ?", 
+                   (delivery_slot, ref_code))
+    conn.commit()
+    conn.close()
 
-    def get_pending_orders(self) -> List[Order]:
-        rows = self.conn.execute("SELECT * FROM orders WHERE status = 'pending'").fetchall()
-        return [Order(**dict(row)) for row in map(dict, rows)]
-
-    def update_order_status(self, order_id: int, status: str):
-        self.conn.execute(
-            "UPDATE orders SET status = ? WHERE id = ?",
-            (status, order_id)
-        )
-        self.conn.commit()
+def get_paid_count_for_hostel(hostel):
+    """Counts how many PAID orders exist for a specific hostel today."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # We filter by created_at to ensure we only count TODAY's orders for the time slot logic
+    # SQLite 'date' function extracts YYYY-MM-DD
+    cursor.execute('''
+        SELECT COUNT(*) FROM orders 
+        WHERE hostel = ? 
+        AND status = 'PAID' 
+        AND date(created_at) = date('now')
+    ''', (hostel,))
+    
+    count = cursor.fetchone()[0]
+    conn.close()
+    return count
